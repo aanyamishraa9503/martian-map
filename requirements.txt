@@ -1,5 +1,8 @@
 streamlit
 pandas
 numpy
-matplotlib
+plotly
 rasterio
+requests
+Pillow
+netCDF4

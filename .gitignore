@@ -19,3 +19,11 @@ data/processed/*
 # Keep folders in Git
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+
+
+# Include processed Jezero datasets required by MARSCOPE
+!data/raw/jezero_ctx_browse.jpg
+!data/raw/jezero_elevation.tif
+!data/raw/jezero_themis_day_ir.tif
+!data/raw/jezero_themis_night_ir.tif
+!data/raw/jezero_regional_dust.npz
