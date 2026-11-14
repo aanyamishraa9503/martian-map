@@ -9,6 +9,11 @@ import requests
 import streamlit as st
 from PIL import Image
 
+
+# --------------------------------------------------
+# DATA LOADING FUNCTIONS
+# --------------------------------------------------
+
 @st.cache_data
 def load_elevation():
     file_path = "data/raw/jezero_elevation.tif"
@@ -54,30 +59,310 @@ def load_elevation():
 
     return x, y, elevation
 
+
+@st.cache_data
+def load_aligned_raster(file_path):
+    with rasterio.open(file_path) as src:
+        height = src.height
+        width = src.width
+        bounds = src.bounds
+
+        # Reduce resolution for faster interactive plotting.
+        out_height = (height + 5) // 6
+        out_width = (width + 5) // 6
+
+        data = src.read(
+            1,
+            out_shape=(out_height, out_width),
+            resampling=rasterio.enums.Resampling.average,
+            masked=True,
+        ).astype(np.float32)
+
+        data = np.asarray(
+            np.ma.filled(data, np.nan),
+            dtype=np.float32,
+        )
+
+    # Remove invalid elevation values, if present.
+    data[data < -10000] = np.nan
+
+    # Calculate local distances from the southwest edge, in km.
+    pixel_width = (bounds.right - bounds.left) / out_width
+    pixel_height = (bounds.top - bounds.bottom) / out_height
+
+    x = (
+        np.arange(out_width) * pixel_width + pixel_width / 2
+    ) / 1000
+
+    y = (
+        np.arange(out_height) * pixel_height + pixel_height / 2
+    ) / 1000
+
+    # Align the array orientation with the map's upward y-axis.
+    data = np.flipud(data)
+
+    return x, y, data
+
+
+@st.cache_data
+def load_native_slope(file_path):
+    with rasterio.open(file_path) as src:
+
+        # Read the original DEM without downsampling.
+        elevation = src.read(
+            1,
+            masked=True
+        ).astype(np.float32)
+
+        elevation = np.asarray(
+            np.ma.filled(elevation, np.nan),
+            dtype=np.float32
+        )
+
+        elevation[elevation < -10000] = np.nan
+
+        # Get the original pixel dimensions in metres.
+        dx_m = abs(src.transform.a)
+        dy_m = abs(src.transform.e)
+
+        height, width = elevation.shape
+
+        # Generate local map coordinates.
+        x = (
+            np.arange(width) + 0.5
+        ) * dx_m / 1000
+
+        y = (
+            np.arange(height) + 0.5
+        ) * dy_m / 1000
+
+        # Match the upward-facing map orientation.
+        elevation = np.flipud(elevation)
+
+        # Calculate terrain gradients.
+        dz_dy, dz_dx = np.gradient(
+            elevation,
+            dy_m,
+            dx_m
+        )
+
+        # Convert gradients into slope angles.
+        slope_native = np.degrees(
+            np.arctan(np.hypot(dz_dx, dz_dy))
+        )
+
+        slope_native[~np.isfinite(elevation)] = np.nan
+
+    return x, y, slope_native, dx_m, dy_m
+
+
+# --------------------------------------------------
+# PAGE CONFIGURATION
+# --------------------------------------------------
+
 st.set_page_config(
-    page_title="MARSCOPE",
+    page_title="MARSCOPE | Jezero Crater",
     page_icon="🔴",
     layout="wide",
 )
 
-st.title("🔴 MARSCOPE")
-st.subheader("Interplanetary Survival Guide: Martian Map")
+
+# --------------------------------------------------
+# MARSCOPE VISUAL DESIGN
+# --------------------------------------------------
 
 st.markdown("""
-### Mars Exploration & Surface Observation Platform
+<style>
 
-An interactive prototype for exploring the terrain,
-thermal characteristics, atmospheric context, and
-potential exploration routes of Jezero Crater.
+    /* Main application layout */
+
+    .block-container {
+        padding-top: 1.8rem;
+        padding-bottom: 3rem;
+        max-width: 1500px;
+    }
+
+    /* Main typography */
+
+    h1, h2, h3 {
+        letter-spacing: -0.4px;
+    }
+
+    h2 {
+        font-size: 1.55rem !important;
+        font-weight: 650 !important;
+        margin-top: 1.8rem !important;
+        margin-bottom: 0.8rem !important;
+    }
+
+    h3 {
+        font-size: 1.15rem !important;
+        font-weight: 600 !important;
+        margin-top: 1.4rem !important;
+    }
+
+    /* Mission header */
+
+    .marscope-hero {
+        background: linear-gradient(
+            120deg,
+            #151D2B 0%,
+            #202E40 55%,
+            #344354 100%
+        );
+        border: 1px solid #394B60;
+        border-radius: 16px;
+        padding: 34px 38px;
+        margin-bottom: 22px;
+    }
+
+    .marscope-kicker {
+        color: #E58A59;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 3px;
+        margin-bottom: 12px;
+    }
+
+    .marscope-title {
+        color: #F4F6FA !important;
+        font-size: 43px;
+        font-weight: 750;
+        letter-spacing: 2px;
+        line-height: 1.15;
+        margin: 0;
+    }
+
+    .marscope-subtitle {
+        color: #C4CEDB;
+        font-size: 17px;
+        margin-top: 9px;
+    }
+
+    .marscope-description {
+        color: #AAB8C9;
+        font-size: 14px;
+        line-height: 1.8;
+        max-width: 780px;
+        margin-top: 20px;
+    }
+
+    .marscope-status {
+        display: inline-block;
+        color: #9AD9B8;
+        background: #18382F;
+        border: 1px solid #28634D;
+        border-radius: 20px;
+        padding: 6px 12px;
+        font-size: 10px;
+        font-weight: 650;
+        letter-spacing: 1px;
+        margin-top: 18px;
+    }
+
+    /* Section labels */
+
+    .section-label {
+        color: #E58A59;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 2px;
+        margin-bottom: 5px;
+    }
+
+    /* Metric cards */
+
+    [data-testid="stMetric"] {
+        background: rgba(128, 128, 128, 0.07);
+        border: 1px solid rgba(128, 128, 128, 0.20);
+        border-radius: 12px;
+        padding: 17px 18px;
+        min-height: 112px;
+    }
+
+    [data-testid="stMetricLabel"] {
+        font-size: 0.82rem;
+        font-weight: 550;
+    }
+
+    [data-testid="stMetricValue"] {
+        font-size: 1.75rem;
+        font-weight: 700;
+    }
+
+    /* Expanders */
+
+    [data-testid="stExpander"] {
+        border: 1px solid rgba(128, 128, 128, 0.22);
+        border-radius: 10px;
+    }
+
+    /* Dataframes */
+
+    [data-testid="stDataFrame"] {
+        border: 1px solid rgba(128, 128, 128, 0.15);
+        border-radius: 10px;
+        overflow: hidden;
+    }
+
+    /* Buttons and controls */
+
+    .stButton > button {
+        border-radius: 8px;
+    }
+
+    /* Dividers */
+
+    hr {
+        border-color: rgba(128, 128, 128, 0.20);
+    }
+
+</style>
+""", unsafe_allow_html=True)
+
+
+# --------------------------------------------------
+# MARSCOPE HERO HEADER
+# --------------------------------------------------
+
+st.html("""
+<div class="marscope-hero">
+
+    <div class="marscope-kicker">
+        PLANETARY EXPLORATION SYSTEMS
+    </div>
+
+    <h1 class="marscope-title">
+        MARSCOPE
+    </h1>
+
+    <div class="marscope-subtitle">
+        Interplanetary Survival Guide · Jezero Crater
+    </div>
+
+    <div class="marscope-description">
+        An integrated planetary exploration and visualization
+        platform for examining Martian surface characteristics,
+        terrain conditions, atmospheric context, and experimental
+        terrain-aware exploration routes.
+    </div>
+
+    <div class="marscope-status">
+        RESEARCH & VISUALIZATION PROTOTYPE
+    </div>
+
+</div>
 """)
 
+
 st.info(
-    "MARSCOPE is a research and visualization prototype. "
-    "Its maps and route recommendations are not certified "
-    "for real rover navigation."
+    "MARSCOPE is an experimental planetary exploration and "
+    "visualization platform. Its terrain screening and route "
+    "recommendations are not certified for real rover navigation."
 )
 
-with st.expander("Data Sources and Methodology", expanded=False):
+
+with st.expander("DATA SOURCES & METHODOLOGY", expanded=False):
 
     st.markdown("""
     **1. Surface and Terrain**
@@ -108,77 +393,207 @@ with st.expander("Data Sources and Methodology", expanded=False):
         "as direct operational measurements."
     )
 
-st.write(
-    "Explore Jezero Crater on Mars, inspect terrain, "
-    "and compare potential exploration sites."
-)
 
 # --------------------------------------------------
-# 1. Load an official USGS Jezero surface-image preview
+# 1. UNIFIED JEZERO CRATER MAP
 # --------------------------------------------------
 
-IMAGE_URL = (
-    "https://asc-pds-services.s3.us-west-2.amazonaws.com/"
-    "mosaic/mars2020_trn/CTX/ScienceInvestigationMaps_JPL/"
-    "browse_M20_JezeroCrater_CTXortho_mosaic_5m.jpg"
+st.html('<div class="section-label">01 / SURFACE EXPLORATION</div>')
+
+st.subheader("Jezero Crater — Unified Exploration Map")
+
+st.caption(
+    "Explore the surface, elevation, derived slope and infrared "
+    "imagery using the same local map reference."
 )
-# The USGS Astrogeology Science Center provides this image as a preview of the full-resolution raster.
-# Found from the index page: https://asc-pds-services.s3.us-west-2.amazonaws.com/mosaic/mars2020_trn/CTX/index.html; image- https://asc-pds-services.s3.us-west-2.amazonaws.com/mosaic/mars2020_trn/CTX/ScienceInvestigationMaps_JPL/browse_M20_JezeroCrater_CTXortho_mosaic_5m.jpg
-
-IMAGE_PATH = Path("data/raw/jezero_ctx_browse.jpg")
-
-# Approximate bounds of the matching broad-area USGS mosaic.
-WEST, EAST = 76.99, 78.58
-SOUTH, NORTH = 17.58, 19.29
-
-
-@st.cache_data
-def load_jezero_image():
-    IMAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-    if not IMAGE_PATH.exists():
-        response = requests.get(IMAGE_URL, timeout=60)
-        response.raise_for_status()
-        IMAGE_PATH.write_bytes(response.content)
-
-    with Image.open(IMAGE_PATH) as image:
-        return np.array(image.convert("RGB"))
-
-
-st.subheader("Jezero Crater — Surface Imagery")
 
 try:
-    image_array = load_jezero_image()
+    # Load all aligned raster layers.
+    map_x, map_y, ctx_surface = load_aligned_raster(
+        "data/processed/jezero_ctx_aligned.tif"
+    )
 
-    image_height, image_width = image_array.shape[:2]
+    _, _, elevation_layer = load_aligned_raster(
+        "data/raw/jezero_elevation.tif"
+    )
 
-    fig = go.Figure(
-        go.Image(
-            z=image_array,
-            x0=WEST,
-            dx=(EAST - WEST) / image_width,
-            y0=NORTH,
-            dy=-(NORTH - SOUTH) / image_height,
-            hoverinfo="skip",
+    _, _, day_ir_layer = load_aligned_raster(
+        "data/processed/jezero_themis_day_aligned.tif"
+    )
+
+    _, _, night_ir_layer = load_aligned_raster(
+        "data/processed/jezero_themis_night_aligned.tif"
+    )
+
+    # Derive slope from the elevation layer.
+    dx_m = (map_x[1] - map_x[0]) * 1000
+    dy_m = (map_y[1] - map_y[0]) * 1000
+
+    dz_dy, dz_dx = np.gradient(
+        elevation_layer,
+        dy_m,
+        dx_m,
+    )
+
+    slope_layer = np.degrees(
+        np.arctan(np.hypot(dz_dx, dz_dy))
+    )
+
+    slope_layer[~np.isfinite(elevation_layer)] = np.nan
+
+    # Keep the existing downstream terrain and route sections working.
+    x = map_x
+    y = map_y
+    elevation = elevation_layer
+    slope = slope_layer
+
+    # Let the user choose which layer to display.
+    selected_layer = st.selectbox(
+        "Select map layer",
+        [
+            "CTX Surface",
+            "Elevation",
+            "Slope",
+            "THEMIS Day IR",
+            "THEMIS Night IR",
+        ],
+    )
+
+    show_slope_overlay = False
+
+    if selected_layer == "CTX Surface":
+        show_slope_overlay = st.checkbox(
+            "Overlay slope screening on CTX surface",
+            value=False,
+        )
+
+    # Configure the selected layer.
+    if selected_layer == "CTX Surface":
+        active_data = ctx_surface
+        colorscale = "Greys"
+        colorbar_title = "Image value"
+        hover_label = "Image value"
+        hover_format = ".0f"
+
+    elif selected_layer == "Elevation":
+        active_data = elevation_layer
+        colorscale = "Viridis"
+        colorbar_title = "Elevation (m)"
+        hover_label = "Elevation"
+        hover_format = ".1f"
+
+    elif selected_layer == "Slope":
+        active_data = slope_layer
+        colorscale = "YlOrRd"
+        colorbar_title = "Slope (degrees)"
+        hover_label = "Slope"
+        hover_format = ".1f"
+
+    elif selected_layer == "THEMIS Day IR":
+        active_data = day_ir_layer
+        colorscale = "Inferno"
+        colorbar_title = "8-bit image value"
+        hover_label = "Day IR image value"
+        hover_format = ".0f"
+
+    else:
+        active_data = night_ir_layer
+        colorscale = "Inferno"
+        colorbar_title = "8-bit image value"
+        hover_label = "Night IR image value"
+        hover_format = ".0f"
+
+    # Display the selected raster.
+    fig_map = go.Figure(
+        data=go.Heatmap(
+            x=map_x,
+            y=map_y,
+            z=active_data,
+            colorscale=colorscale,
+            colorbar={"title": colorbar_title},
+            hovertemplate=(
+                "East: %{x:.2f} km<br>"
+                "North: %{y:.2f} km<br>"
+                + hover_label + ": %{z:" + hover_format + "}"
+                "<extra></extra>"
+            ),
+            connectgaps=False,
         )
     )
 
-    fig.update_layout(
-        height=620,
-        margin=dict(l=10, r=10, t=20, b=10),
-        dragmode="pan",
-        xaxis_title="Longitude (degrees east)",
-        yaxis_title="Latitude (degrees north)",
-        xaxis=dict(range=[WEST, EAST]),
+    if show_slope_overlay:
+        fig_map.add_trace(
+            go.Heatmap(
+                x=map_x,
+                y=map_y,
+                z=slope_layer,
+                colorscale="YlOrRd",
+                zmin=0,
+                zmax=45,
+                opacity=0.35,
+                showscale=False,
+                hovertemplate=(
+                    "East: %{x:.2f} km<br>"
+                    "North: %{y:.2f} km<br>"
+                    "Slope: %{z:.1f}°"
+                    "<extra></extra>"
+                ),
+                connectgaps=False,
+            )
+        )
+
+    fig_map.update_layout(
+        height=650,
+        margin=dict(l=20, r=20, t=30, b=20),
+        xaxis_title="Distance from western edge (km)",
+        yaxis_title="Distance from southern edge (km)",
         yaxis=dict(
-            range=[SOUTH, NORTH],
             scaleanchor="x",
             scaleratio=1,
         ),
     )
 
+    # Scientific Points of Interest
+    fig_map.add_trace(go.Scatter(
+        x=[25.495, 23.094],
+        y=[51.218, 51.704],
+        mode="markers+text",
+        text=["Octavia E. Butler", "Three Forks"],
+        textposition="top center",
+        marker=dict(
+            size=11,
+            color=["red", "cyan"],
+            symbol="star"
+        ),
+        customdata=[
+            [
+                "Perseverance landing site",
+                "18 Feb 2021",
+                "Approximate landing-site coordinates",
+                "NASA / Science Advances"
+            ],
+            [
+                "Perseverance sample depot",
+                "10 sample tubes deposited",
+                "Approximate depot-centre coordinates",
+                "NASA Three Forks depot documentation"
+            ]
+        ],
+        hovertemplate=(
+            "<b>%{text}</b><br>"
+            "Feature: %{customdata[0]}<br>"
+            "Mission information: %{customdata[1]}<br>"
+            "Coordinate status: %{customdata[2]}<br>"
+            "Local X: %{x:.3f} km<br>"
+            "Local Y: %{y:.3f} km<br>"
+            "Source: %{customdata[3]}<br>"
+            "<extra></extra>"
+        ),
+        name="Scientific Points of Interest"
+    ))
+
     st.plotly_chart(
-        fig,
+        fig_map,
         use_container_width=True,
         config={
             "scrollZoom": True,
@@ -186,417 +601,72 @@ try:
         },
     )
 
-    st.caption(
-        "Source: USGS Astrogeology Science Center, "
-        "Mars 2020 CTX orthomosaic browse image. "
-        "This is a preview, not the full-resolution raster."
-    )
-
-except Exception as error:
-    st.error(
-        "The Jezero preview could not be loaded. "
-        "Check your internet connection and try again."
-    )
-    st.caption(f"Technical details: {error}")
-
-# --------------------------------------------------
-# 2. Demonstration targets — not real science locations
-# --------------------------------------------------
-
-st.subheader("Jezero Crater — Elevation Map")
-#Source: USGS Mars 2020 Science Investigation CTX DEM Mosaic.
-#local file-data/raw/jezero_elevation.tif; It contains One band of numerical elevation values, not a normal photograph
-#Direct TIFF download- https://planetarymaps.usgs.gov/mosaic/mars2020_trn/CTX/ScienceInvestigationMaps_JPL/M20_JezeroCrater_CTXDEM_20m.tif?utm_source=chatgpt.com
-
-
-try:
-    x, y, elevation = load_elevation()
-
-    fig_elevation = go.Figure(
-        data=go.Heatmap(
-            x=x,
-            y=y,
-            z=elevation,
-            colorscale="Viridis",
-            colorbar={"title": "Elevation (m)"},
-            hovertemplate=(
-                "East: %{x:.1f} km<br>"
-                "North: %{y:.1f} km<br>"
-                "Elevation: %{z:.1f} m"
-                "<extra></extra>"
-            ),
-            connectgaps=False,
-        )
-    )
-
-    fig_elevation.update_layout(
-        xaxis_title="Distance from western edge (km)",
-        yaxis_title="Distance from southern edge (km)",
-        height=600,
-        margin={"l": 20, "r": 20, "t": 30, "b": 20},
-    )
-
-    st.plotly_chart(
-        fig_elevation,
-        use_container_width=True,
-    )
-
-    st.caption(
-        "Source: USGS Jezero Crater CTX DEM, 20 m/pixel. "
-        "The displayed grid is downsampled for performance. "
-        "Coordinates are local projected distances, not latitude "
-        "and longitude."
-    )
-
-except Exception as e:
-    st.error(f"Could not load the elevation map: {e}")
-
-
-st.subheader("Jezero Crater — Slope Map")
-
-try:
-    # Calculate the spacing between elevation pixels, in metres
-    dx_m = (x[1] - x[0]) * 1000
-    dy_m = (y[1] - y[0]) * 1000
-
-    # Calculate elevation change in the east-west and north-south directions
-    dz_dy, dz_dx = np.gradient(elevation, dy_m, dx_m)
-
-    # Convert the terrain gradient into slope angles, in degrees
-    slope = np.degrees(
-        np.arctan(np.hypot(dz_dx, dz_dy))
-    )
-
-    # Keep areas without valid elevation data blank
-    slope[~np.isfinite(elevation)] = np.nan
-
-    fig_slope = go.Figure(
-        data=go.Heatmap(
-            x=x,
-            y=y,
-            z=slope,
-            colorscale="YlOrRd",
-            zmin=0,
-            zmax=45,
-            colorbar={"title": "Slope (degrees)"},
-            hovertemplate=(
-                "East: %{x:.1f} km<br>"
-                "North: %{y:.1f} km<br>"
-                "Slope: %{z:.1f}°"
-                "<extra></extra>"
-            ),
-            connectgaps=False,
-        )
-    )
-
-    fig_slope.update_layout(
-        xaxis_title="Distance from western edge (km)",
-        yaxis_title="Distance from southern edge (km)",
-        height=600,
-        margin={"l": 20, "r": 20, "t": 30, "b": 20},
-    )
-
-    st.plotly_chart(fig_slope, width="stretch")
-
-    st.caption(
-        "Slope is calculated from the downsampled elevation grid, "
-        "with approximately 120 m spacing. Slopes above 45° share "
-        "the top display colour. This is a regional terrain overview, "
-        "not a rover-safety assessment."
-    )
-
-except Exception as e:
-    st.error(f"Could not calculate the slope map: {e}")
-
-
-
-st.subheader("Jezero Crater — Daytime Thermal Explorer")
-
-try:
-    themis_path = "data/raw/jezero_themis_day_ir.tif"
-    mars_radius = 3396190
-
-    with rasterio.open(themis_path) as src:
-
-        # Read the infrared raster
-        day_ir = src.read(1).astype(float)
-
-        # Get the geographic position of every pixel
-        width = src.width
-        height = src.height
-
-        longitude = (
-            (src.bounds.left +
-             (np.arange(width) + 0.5) * src.res[0])
-            / mars_radius
-        ) * (180 / np.pi) + 180
-
-        latitude = (
-            (src.bounds.bottom +
-             (np.arange(height) + 0.5) * src.res[1])
-            * (180 / np.pi) / mars_radius
-        )
-
-        # Flip vertically so southern latitudes appear at the bottom
-        day_ir = np.flipud(day_ir)
-
-        # Exclude NoData pixels
-        day_ir[day_ir == 0] = np.nan
-
-    # Calculate basic statistics
-    valid_values = day_ir[np.isfinite(day_ir)]
+    st.markdown("### Perseverance Mission Context")
 
     st.write(
-        "Explore the infrared signal recorded across "
-        "the Jezero region."
+        "Explore the rover's actual traverse and mission locations "
+        "using external scientific mapping resources."
     )
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
 
-    col1.metric("Valid pixels", f"{len(valid_values):,}")
-    col2.metric("Lowest signal", f"{valid_values.min():.0f}")
-    col3.metric("Highest signal", f"{valid_values.max():.0f}")
-
-    # Display controls
-    palette = st.selectbox(
-        "Choose colour palette",
-        ["Gray", "Inferno", "Viridis"]
-    )
-
-    contrast = st.slider(
-        "Adjust image contrast",
-        min_value=1,
-        max_value=255,
-        value=(1, 255)
-    )
-
-    # Interactive infrared map
-    fig_themis = go.Figure(
-        data=go.Heatmap(
-            x=longitude,
-            y=latitude,
-            z=day_ir,
-            colorscale=palette,
-            zmin=contrast[0],
-            zmax=contrast[1],
-            colorbar={
-                "title": "IR signal",
-                "tickmode": "auto"
-            },
-            hovertemplate=(
-                "Longitude: %{x:.3f}°E<br>"
-                "Latitude: %{y:.3f}°N<br>"
-                "Infrared signal: %{z:.0f}"
-                "<extra></extra>"
-            )
-        )
-    )
-
-    fig_themis.update_layout(
-        xaxis_title="Longitude (°E)",
-        yaxis_title="Planetocentric latitude (°N)",
-        height=650,
-        margin={"l": 20, "r": 20, "t": 30, "b": 20}
-    )
-
-    st.plotly_chart(
-        fig_themis,
-        width="stretch",
-        config={"scrollZoom": True}
-    )
-
-    # Pixel value distribution
-    st.subheader("Infrared Signal Distribution")
-
-    fig_hist = go.Figure(
-        data=go.Histogram(
-            x=valid_values,
-            nbinsx=40
-        )
-    )
-
-    fig_hist.update_layout(
-        xaxis_title="8-bit infrared signal value",
-        yaxis_title="Number of pixels",
-        height=350
-    )
-
-    st.plotly_chart(fig_hist, width="stretch")
-
-    st.caption(
-        "Source: USGS Astrogeology THEMIS Day IR Controlled Mosaic. "
-        "Band 9, approximately 12.57 µm, 100 m/pixel. "
-        "Values are qualitative 8-bit infrared image values, "
-        "not calibrated surface temperatures."
-    )
-
-except Exception as e:
-    st.error(f"Could not load the THEMIS explorer: {e}")
-
-# This themis image isnt just an image but a rastor that contains geospatial information, in the form of a grid of numerical pixel values. The THEMIS image is a single-band raster, meaning it contains only one layer of data, which corresponds to the infrared intensity. The pixel values are stored as 8-bit unsigned integers, ranging from 0 to 255, where higher values indicate stronger infrared emissions.
-
-st.subheader("Jezero Crater — Nighttime Thermal Explorer")
-
-try:
-    night_themis_path = "data/raw/jezero_themis_night_ir.tif"
-    mars_radius = 3396190
-
-    with rasterio.open(night_themis_path) as src:
-        night_ir = src.read(1).astype(float)
-        width = src.width
-        height = src.height
-
-        longitude = (
-            (src.bounds.left +
-             (np.arange(width) + 0.5) * src.res[0])
-            / mars_radius
-        ) * (180 / np.pi) + 180
-
-        latitude = (
-            (src.bounds.bottom +
-             (np.arange(height) + 0.5) * src.res[1])
-            * (180 / np.pi) / mars_radius
+    with col1:
+        st.markdown(
+            "[NASA — Perseverance Rover Location Map]"
+            "(https://science.nasa.gov/mission/mars-2020-perseverance/location-map/)"
         )
 
-        night_ir = np.flipud(night_ir)
-        night_ir[night_ir == 0] = np.nan
-
-    valid_night = night_ir[np.isfinite(night_ir)]
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Valid pixels", f"{len(valid_night):,}")
-    col2.metric("Lowest signal", f"{valid_night.min():.0f}")
-    col3.metric("Highest signal", f"{valid_night.max():.0f}")
-
-    night_palette = st.selectbox(
-        "Choose nighttime colour palette",
-        ["Gray", "Inferno", "Viridis"],
-        key="night_palette"
-    )
-
-    night_contrast = st.slider(
-        "Adjust nighttime image contrast",
-        min_value=1,
-        max_value=255,
-        value=(1, 255),
-        key="night_contrast"
-    )
-
-    fig_night = go.Figure(data=go.Heatmap(
-        x=longitude,
-        y=latitude,
-        z=night_ir,
-        colorscale=night_palette,
-        zmin=night_contrast[0],
-        zmax=night_contrast[1],
-        colorbar={"title": "IR signal"},
-        hovertemplate=(
-            "Longitude: %{x:.3f}°E<br>"
-            "Latitude: %{y:.3f}°N<br>"
-            "Infrared signal: %{z:.0f}<extra></extra>"
-        )
-    ))
-
-    fig_night.update_layout(
-        xaxis_title="Longitude (°E)",
-        yaxis_title="Planetocentric latitude (°N)",
-        height=650,
-        margin={"l": 20, "r": 20, "t": 30, "b": 20}
-    )
-
-    st.plotly_chart(
-        fig_night,
-        width="stretch",
-        config={"scrollZoom": True}
-    )
-
-    st.subheader("Nighttime Infrared Signal Distribution")
-
-    fig_night_hist = go.Figure(data=go.Histogram(
-        x=valid_night,
-        nbinsx=40
-    ))
-
-    fig_night_hist.update_layout(
-        xaxis_title="8-bit infrared signal value",
-        yaxis_title="Number of pixels",
-        height=350
-    )
-
-    st.plotly_chart(fig_night_hist, width="stretch")
-
-    st.caption(
-        "Source: USGS Astrogeology THEMIS Night IR Controlled Mosaic. "
-        "100 m/pixel. Values are qualitative 8-bit infrared image "
-        "values, not calibrated surface temperatures."
-    )
-
-except Exception as e:
-    st.error(f"Could not load the nighttime THEMIS explorer: {e}")
-
-st.subheader("Day vs Night — Thermal Comparison")
-
-try:
-    col_day, col_night = st.columns(2)
-
-    with col_day:
-        st.markdown("#### Daytime Infrared")
-        st.plotly_chart(
-            go.Figure(data=go.Heatmap(
-                x=longitude,
-                y=latitude,
-                z=day_ir,
-                colorscale="Inferno",
-                colorbar={"title": "IR signal"},
-                hovertemplate=(
-                    "Longitude: %{x:.3f}°E<br>"
-                    "Latitude: %{y:.3f}°N<br>"
-                    "IR signal: %{z:.0f}<extra></extra>"
-                )
-            )).update_layout(
-                height=450,
-                margin={"l": 10, "r": 10, "t": 10, "b": 10},
-                xaxis_title="Longitude (°E)",
-                yaxis_title="Latitude (°N)"
-            ),
-            width="stretch"
+    with col2:
+        st.markdown(
+            "[FU Berlin — Interactive Jezero Crater Map]"
+            "(https://maps.planet.fu-berlin.de/jezero/)"
         )
 
-    with col_night:
-        st.markdown("#### Nighttime Infrared")
-        st.plotly_chart(
-            go.Figure(data=go.Heatmap(
-                x=longitude,
-                y=latitude,
-                z=night_ir,
-                colorscale="Viridis",
-                colorbar={"title": "IR signal"},
-                hovertemplate=(
-                    "Longitude: %{x:.3f}°E<br>"
-                    "Latitude: %{y:.3f}°N<br>"
-                    "IR signal: %{z:.0f}<extra></extra>"
-                )
-            )).update_layout(
-                height=450,
-                margin={"l": 10, "r": 10, "t": 10, "b": 10},
-                xaxis_title="Longitude (°E)",
-                yaxis_title="Latitude (°N)"
-            ),
-            width="stretch"
+        st.caption(
+            "These external maps provide broader mission context. "
+            "Their geographic coverage and coordinate systems may differ "
+            "from the local DEM displayed above."
         )
 
-    st.caption(
-        "Both images show qualitative THEMIS infrared signal values. "
-        "They are not calibrated temperature measurements. "
-        "Differences in brightness should not be interpreted as "
-        "quantitative day-to-night temperature changes."
-    )
+    # Explain the selected data layer.
+    if selected_layer == "CTX Surface":
+        st.caption(
+            "Source: USGS CTX orthomosaic. Original imagery "
+            "is approximately 5 m/pixel, resampled to the "
+            "20 m DEM grid and downsampled for display."
+        )
 
-except NameError:
-    st.warning(
-        "Load both the daytime and nighttime thermal datasets "
-        "to display this comparison."
-    )
+    elif selected_layer == "Elevation":
+        st.caption(
+            "Source: USGS Jezero CTX DEM, 20 m/pixel. "
+            "Elevation is displayed in metres."
+        )
+
+    elif selected_layer == "Slope":
+        st.caption(
+            "Derived from the USGS elevation model. "
+            "Slope is calculated from the displayed elevation "
+            "grid; it is a terrain-screening indicator, not "
+            "a rover safety assessment."
+        )
+
+    else:
+        st.caption(
+            "Source: USGS THEMIS controlled IR mosaic. "
+            "The original data resolution is 100 m/pixel. "
+            "Displayed values are qualitative 8-bit image "
+            "values, not calibrated temperatures."
+        )
+
+except Exception as error:
+    st.error(f"Could not load the unified map: {error}")
+
+
+# --------------------------------------------------
+# 2. REGIONAL ATMOSPHERIC DUST EXPLORER
+# --------------------------------------------------
+
+st.html('<div class="section-label">02 / ATMOSPHERIC CONTEXT</div>')
 
 st.subheader("Regional Atmospheric Dust Explorer")
 
@@ -628,7 +698,7 @@ try:
         )
     ))
 
-    # Mark the approximate location of Jezero Crater
+    # Mark the approximate location of Jezero Crater.
     fig_dust.add_trace(go.Scatter(
         x=[77.7],
         y=[18.4],
@@ -668,6 +738,12 @@ try:
 except Exception as e:
     st.error(f"Could not load the atmospheric dust explorer: {e}")
 
+
+# --------------------------------------------------
+# 3. SCIENCE POINTS OF INTEREST
+# --------------------------------------------------
+
+st.html('<div class="section-label">03 / MISSION LANDMARKS</div>')
 
 st.subheader("Jezero Crater — Science Points of Interest")
 
@@ -735,80 +811,544 @@ st.markdown(
 )
 
 
+# --------------------------------------------------
+# 4. TERRAIN HAZARD SCREENING
+# --------------------------------------------------
+
+st.html('<div class="section-label">04 / TERRAIN INTELLIGENCE</div>')
+
 st.subheader("Terrain Hazard Screening")
 
-try:
-    # Classify terrain using slope angle
-    slope_classes = np.select(
-        [
-            slope < 10,
-            (slope >= 10) & (slope < 20),
-            slope >= 20
-        ],
-        [1, 2, 3],
-        default=0
-    ).astype(float)
+st.caption(
+    "Quantitative slope analysis derived from the Jezero Crater "
+    "Digital Elevation Model. Values below describe the analysis "
+    "grid and are not official rover safety classifications."
+)
 
-    slope_classes[~np.isfinite(slope)] = np.nan
+native_x, native_y, native_slope, native_dx, native_dy = (
+    load_native_slope("data/raw/jezero_elevation.tif")
+)
 
-    fig_hazard = go.Figure(data=go.Heatmap(
-        x=x,
-        y=y,
-        z=slope_classes,
-        customdata=slope,
-        colorscale=[
-            [0.00, "#2ca25f"],
-            [0.3332, "#2ca25f"],
-            [0.3333, "#fdae61"],
-            [0.6665, "#fdae61"],
-            [0.6666, "#d7191c"],
-            [1.00, "#d7191c"]
-        ],
-        zmin=1,
-        zmax=3,
-        colorbar={
-            "title": "Slope category",
-            "tickvals": [1, 2, 3],
-            "ticktext": [
-                "Lower",
-                "Moderate",
-                "Steeper"
-            ]
-        },
-        hovertemplate=(
-            "Local X: %{x:.2f} km<br>"
-            "Local Y: %{y:.2f} km<br>"
-            "Slope: %{customdata:.1f}°<extra></extra>"
-        )
-    ))
 
-    fig_hazard.update_layout(
-        xaxis_title="Local distance east (km)",
-        yaxis_title="Local distance north (km)",
-        height=600,
-        margin={"l": 20, "r": 20, "t": 30, "b": 20}
+# Native DEM diagnostics are grouped into an expandable section.
+with st.expander("NATIVE DEM RESOLUTION & DATA CHECK", expanded=False):
+
+    native_valid_count = np.count_nonzero(
+        np.isfinite(native_slope)
     )
 
-    st.plotly_chart(
-        fig_hazard,
-        width="stretch",
-        config={"scrollZoom": True}
+    st.markdown("**Original DEM characteristics**")
+
+    native_col1, native_col2, native_col3 = st.columns(3)
+
+    native_col1.metric(
+        "DEM rows × columns",
+        f"{native_slope.shape[0]:,} × {native_slope.shape[1]:,}"
     )
 
-    st.markdown("""
-    **Screening categories**
+    native_col2.metric(
+        "Horizontal spacing",
+        f"{native_dx:.1f} m"
+    )
 
-    - 🟢 Lower slope: below 10°
-    - 🟠 Moderate slope: 10° to below 20°
-    - 🔴 Steeper terrain: 20° and above
-    """)
+    native_col3.metric(
+        "Vertical spacing",
+        f"{native_dy:.1f} m"
+    )
+
+    st.markdown("**Native-resolution slope statistics**")
+
+    native_col1, native_col2, native_col3 = st.columns(3)
+
+    native_col1.metric(
+        "Valid slope cells",
+        f"{native_valid_count:,}"
+    )
+
+    native_col2.metric(
+        "Mean slope",
+        f"{np.nanmean(native_slope):.2f}°"
+    )
+
+    native_col3.metric(
+        "Maximum slope",
+        f"{np.nanmax(native_slope):.2f}°"
+    )
 
     st.caption(
-        "Derived from the USGS Jezero CTX DEM. "
-        "Categories are illustrative prototype screening bands, "
-        "not official NASA rover safety thresholds. "
-        "Slope alone does not establish terrain traversability."
+        "Native-resolution slope is calculated from the original "
+        "approximately 20 m DEM. It is kept separate from the "
+        "downsampled terrain analysis displayed below."
     )
+    st.markdown("**Extreme Slope Diagnostics**")
+    native_valid = np.isfinite(native_slope)
+    native_valid_count = np.count_nonzero(native_valid)
+    extreme_thresholds = [30, 45, 60]
+
+    extreme_results = []
+
+    for threshold in extreme_thresholds:
+
+        extreme_count = np.count_nonzero(
+            native_valid & (native_slope >= threshold)
+        )
+
+        extreme_percentage = (
+            extreme_count / native_valid_count
+        ) * 100
+
+        extreme_results.append({
+            "Slope threshold": f"≥ {threshold}°",
+            "Native cells": f"{extreme_count:,}",
+            "Percentage": f"{extreme_percentage:.4f}%"
+        })
+
+    extreme_table = pd.DataFrame(extreme_results)
+
+    st.dataframe(
+        extreme_table,
+        hide_index=True,
+        width="stretch"
+    )
+
+    st.caption(
+        "This diagnostic identifies the frequency of high-slope "
+        "cells. High values require further spatial inspection "
+        "before being interpreted as genuine terrain hazards."
+    )
+
+
+try:
+    # Convert slope data to a numerical array.
+    slope_array = np.asarray(slope, dtype=float)
+
+    # Identify valid terrain pixels.
+    valid_mask = np.isfinite(slope_array)
+    valid_slope = slope_array[valid_mask]
+
+    if valid_slope.size == 0:
+        st.warning("No valid slope data is available.")
+
+    else:
+        # Classify terrain using slope angle.
+        lower_mask = valid_mask & (slope_array < 10)
+        moderate_mask = valid_mask & (
+            (slope_array >= 10) & (slope_array < 20)
+        )
+        steeper_mask = valid_mask & (slope_array >= 20)
+
+        slope_classes = np.full(
+            slope_array.shape,
+            np.nan,
+            dtype=float
+        )
+
+        slope_classes[lower_mask] = 1
+        slope_classes[moderate_mask] = 2
+        slope_classes[steeper_mask] = 3
+
+        # Calculate terrain statistics.
+        total_valid = valid_slope.size
+
+        lower_count = np.count_nonzero(lower_mask)
+        moderate_count = np.count_nonzero(moderate_mask)
+        steeper_count = np.count_nonzero(steeper_mask)
+
+        lower_pct = (lower_count / total_valid) * 100
+        moderate_pct = (moderate_count / total_valid) * 100
+        steeper_pct = (steeper_count / total_valid) * 100
+
+        # Compare native-resolution and downsampled slope categories.
+        native_valid = np.isfinite(native_slope)
+
+        native_lower = native_valid & (native_slope < 10)
+        native_moderate = native_valid & (
+            (native_slope >= 10) & (native_slope < 20)
+        )
+        native_steeper = native_valid & (native_slope >= 20)
+
+        native_total = np.count_nonzero(native_valid)
+
+        if native_total > 0:
+
+            native_lower_pct = (
+                np.count_nonzero(native_lower) / native_total
+            ) * 100
+
+            native_moderate_pct = (
+                np.count_nonzero(native_moderate) / native_total
+            ) * 100
+
+            native_steeper_pct = (
+                np.count_nonzero(native_steeper) / native_total
+            ) * 100
+
+            # Calculate native slope percentiles.
+            native_valid_slope = native_slope[native_valid]
+
+            native_percentiles = np.percentile(
+                native_valid_slope,
+                [50, 90, 95, 99]
+            )
+
+            # Keep detailed resolution analysis together.
+            with st.expander(
+                "NATIVE VS DOWNSAMPLED ANALYSIS",
+                expanded=False
+            ):
+
+                st.markdown("**Native Slope Percentile Analysis**")
+
+                percentile_table = pd.DataFrame({
+                    "Percentile": [
+                        "50th percentile (Median)",
+                        "90th percentile",
+                        "95th percentile",
+                        "99th percentile"
+                    ],
+                    "Slope angle": [
+                        f"{value:.2f}°"
+                        for value in native_percentiles
+                    ]
+                })
+
+                st.dataframe(
+                    percentile_table,
+                    hide_index=True,
+                    width="stretch"
+                )
+
+                st.caption(
+                    "Percentiles show the slope angle below which "
+                    "the corresponding percentage of valid native "
+                    "slope cells falls."
+                )
+
+                st.markdown("**Native vs Downsampled Slope Comparison**")
+
+                comparison = pd.DataFrame({
+                    "Slope category": [
+                        "Lower (<10°)",
+                        "Moderate (10°–<20°)",
+                        "Steeper (≥20°)"
+                    ],
+                    "Downsampled (%)": [
+                        lower_pct,
+                        moderate_pct,
+                        steeper_pct
+                    ],
+                    "Native resolution (%)": [
+                        native_lower_pct,
+                        native_moderate_pct,
+                        native_steeper_pct
+                    ]
+                })
+
+                st.dataframe(
+                    comparison,
+                    hide_index=True,
+                    width="stretch"
+                )
+
+                st.caption(
+                    "The two percentages are calculated from their "
+                    "respective valid-cell masks. Differences in valid "
+                    "coverage may affect direct comparison."
+                )
+
+        else:
+            st.warning(
+                "No valid native-resolution slope data is available."
+            )
+
+        mean_slope = np.mean(valid_slope)
+        max_slope = np.max(valid_slope)
+
+        # --------------------------------------------------
+        # TERRAIN OVERVIEW METRIC CARDS
+        # --------------------------------------------------
+
+        st.markdown("### Terrain Overview")
+
+        st.caption(
+            "Statistics calculated from the downsampled DEM slope grid. "
+            "Each valid cell represents approximately 120 m of "
+            "horizontal spacing."
+        )
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        col1.metric(
+            "Valid terrain cells",
+            f"{total_valid:,}",
+            help="Number of grid cells with valid calculated slope values."
+        )
+
+        col2.metric(
+            "Mean slope",
+            f"{mean_slope:.2f}°",
+            help="Average slope angle across all valid terrain cells."
+        )
+
+        col3.metric(
+            "Maximum slope",
+            f"{max_slope:.2f}°",
+            help="Highest calculated slope angle in the downsampled grid."
+        )
+
+        col4.metric(
+            "Steeper terrain",
+            f"{steeper_pct:.2f}%",
+            help="Percentage of valid cells with slope angles of 20° or greater."
+        )
+
+        st.caption(
+            "Valid terrain cells exclude locations with missing or "
+            "invalid elevation/slope data. The maximum is a calculated "
+            "grid value and should not be interpreted as a verified "
+            "physical cliff or rover hazard."
+        )
+
+        # --------------------------------------------------
+        # SLOPE CLASSIFICATION
+        # --------------------------------------------------
+
+        st.markdown("### Slope Classification")
+
+        st.caption(
+            "Percentage of valid downsampled terrain cells in each "
+            "illustrative slope category."
+        )
+
+        stat_col1, stat_col2, stat_col3 = st.columns(3)
+
+        stat_col1.metric(
+            "Lower · Below 10°",
+            f"{lower_pct:.1f}%"
+        )
+
+        stat_col2.metric(
+            "Moderate · 10°–20°",
+            f"{moderate_pct:.1f}%"
+        )
+
+        stat_col3.metric(
+            "Steeper · ≥20°",
+            f"{steeper_pct:.1f}%"
+        )
+
+        # Slope distribution histogram.
+        st.markdown("### Slope Angle Distribution")
+
+        st.caption(
+            "Histogram showing how frequently different slope angles "
+            "occur across the valid downsampled terrain cells."
+        )
+
+        fig_distribution = go.Figure()
+
+        fig_distribution.add_trace(go.Histogram(
+            x=valid_slope,
+            nbinsx=30,
+            histnorm="percent",
+            marker=dict(
+                color="#4682B4",
+                line=dict(
+                    color="white",
+                    width=0.5
+                )
+            ),
+            hovertemplate=(
+                "Slope range: %{x}<br>"
+                "Percentage of terrain cells: %{y:.2f}%"
+                "<extra></extra>"
+            )
+        ))
+
+        fig_distribution.update_layout(
+            xaxis_title="Slope angle (degrees)",
+            yaxis_title="Terrain cells (%)",
+            height=400,
+            bargap=0.05,
+            margin={"l": 20, "r": 20, "t": 30, "b": 40}
+        )
+
+        st.plotly_chart(
+            fig_distribution,
+            width="stretch"
+        )
+
+        # --------------------------------------------------
+        # SPATIAL DISTRIBUTION OF STEEPER TERRAIN
+        # --------------------------------------------------
+
+        st.markdown("### Spatial Distribution of Steeper Terrain")
+
+        st.caption(
+            "Shows where cells with slope angles of 20° or greater "
+            "are concentrated across the Jezero analysis area."
+        )
+
+        rows, cols = slope_array.shape
+
+        # Divide the DEM into 80 spatial zones per direction.
+        row_groups = np.array_split(
+            np.arange(rows),
+            min(80, rows)
+        )
+
+        col_groups = np.array_split(
+            np.arange(cols),
+            min(80, cols)
+        )
+
+        steep_percentage = np.full(
+            (len(row_groups), len(col_groups)),
+            np.nan
+        )
+
+        valid_counts = np.zeros(
+            (len(row_groups), len(col_groups)),
+            dtype=int
+        )
+
+        zone_x = []
+        zone_y = []
+
+        x_values = np.asarray(x)
+        y_values = np.asarray(y)
+
+        for i, row_indices in enumerate(row_groups):
+            zone_y.append(np.mean(y_values[row_indices]))
+
+            for j, col_indices in enumerate(col_groups):
+                zone = slope_array[
+                    np.ix_(row_indices, col_indices)
+                ]
+
+                valid_zone = zone[np.isfinite(zone)]
+
+                valid_counts[i, j] = valid_zone.size
+
+                if valid_zone.size > 0:
+                    steep_percentage[i, j] = (
+                        np.count_nonzero(valid_zone >= 20)
+                        / valid_zone.size
+                    ) * 100
+
+        for col_indices in col_groups:
+            zone_x.append(np.mean(x_values[col_indices]))
+
+        fig_spatial = go.Figure(data=go.Heatmap(
+            x=zone_x,
+            y=zone_y,
+            z=steep_percentage,
+            customdata=valid_counts,
+            colorscale="YlOrRd",
+            zmin=0,
+            zmax=100,
+            colorbar={
+                "title": "Steeper terrain (%)"
+            },
+            hovertemplate=(
+                "Local X: %{x:.2f} km<br>"
+                "Local Y: %{y:.2f} km<br>"
+                "Cells with slope ≥20°: %{z:.1f}%<br>"
+                "Valid cells: %{customdata}<extra></extra>"
+            )
+        ))
+
+        fig_spatial.update_layout(
+            xaxis_title="Local distance east (km)",
+            yaxis_title="Local distance north (km)",
+            height=500,
+            margin={"l": 20, "r": 20, "t": 30, "b": 20}
+        )
+
+        st.plotly_chart(
+            fig_spatial,
+            width="stretch",
+            config={"scrollZoom": True}
+        )
+
+        st.caption(
+            "Each zone summarizes the percentage of valid DEM cells "
+            "with slope angles of 20° or greater. The map uses "
+            "80 × 80 spatial subdivisions where the raster dimensions "
+            "permit. It is a terrain concentration indicator, "
+            "not a rover traversability or safety assessment."
+        )
+
+        # --------------------------------------------------
+        # TERRAIN CLASSIFICATION MAP
+        # --------------------------------------------------
+
+        st.markdown("### Terrain Classification Map")
+
+        st.caption(
+            "Spatial classification of the downsampled slope grid "
+            "using the three screening categories."
+        )
+
+        fig_hazard = go.Figure(data=go.Heatmap(
+            x=x,
+            y=y,
+            z=slope_classes,
+            customdata=slope_array,
+            colorscale=[
+                [0.00, "#2ca25f"],
+                [0.3332, "#2ca25f"],
+                [0.3333, "#fdae61"],
+                [0.6665, "#fdae61"],
+                [0.6666, "#d7191c"],
+                [1.00, "#d7191c"]
+            ],
+            zmin=1,
+            zmax=3,
+            colorbar={
+                "title": "Slope category",
+                "tickvals": [1, 2, 3],
+                "ticktext": [
+                    "Lower",
+                    "Moderate",
+                    "Steeper"
+                ]
+            },
+            hovertemplate=(
+                "Local X: %{x:.2f} km<br>"
+                "Local Y: %{y:.2f} km<br>"
+                "Slope: %{customdata:.1f}°<extra></extra>"
+            )
+        ))
+
+        fig_hazard.update_layout(
+            xaxis_title="Local distance east (km)",
+            yaxis_title="Local distance north (km)",
+            height=600,
+            margin={"l": 20, "r": 20, "t": 30, "b": 20}
+        )
+
+        st.plotly_chart(
+            fig_hazard,
+            width="stretch",
+            config={"scrollZoom": True}
+        )
+
+        st.markdown("""
+        **Screening categories**
+
+        - 🟢 Lower slope: below 10°
+        - 🟠 Moderate slope: 10° to below 20°
+        - 🔴 Steeper terrain: 20° and above
+        """)
+
+        st.caption(
+            "Derived from the USGS Jezero CTX DEM. "
+            "Statistics are calculated from valid slope cells only. "
+            "Categories are illustrative prototype screening bands, "
+            "not official NASA rover safety thresholds. "
+            "Slope alone does not establish terrain traversability."
+        )
 
 except NameError:
     st.warning(
@@ -816,10 +1356,22 @@ except NameError:
         "slope calculation sections execute successfully first."
     )
 
+
+# --------------------------------------------------
+# 5. TERRAIN-AWARE ROUTE PLANNER
+# --------------------------------------------------
+
+st.html('<div class="section-label">05 / ROUTE INTELLIGENCE</div>')
+
 st.subheader("Terrain-Aware Route Planner")
 
+st.caption(
+    "Compare a shortest-distance route with an experimental "
+    "slope-weighted route across the downsampled terrain grid."
+)
+
 try:
-    # Reduce the grid size to make route calculations faster
+    # Reduce the grid size to make route calculations faster.
     step = 4
 
     route_slope = slope[::step, ::step]
@@ -954,10 +1506,13 @@ try:
 
     if not np.isfinite(route_slope[start]):
         st.warning("The selected starting point has missing terrain data.")
+
     elif not np.isfinite(route_slope[goal]):
         st.warning("The selected destination has missing terrain data.")
+
     elif start == goal:
         st.warning("Choose different starting and destination points.")
+
     else:
         shortest_path = find_route(start, goal, False)
         terrain_path = find_route(start, goal, True)
@@ -966,6 +1521,7 @@ try:
             st.warning(
                 "A route could not be found between these points."
             )
+
         else:
             def route_distance(path):
                 distance = 0
@@ -1035,10 +1591,12 @@ try:
             )
 
             metric1, metric2 = st.columns(2)
+
             metric1.metric(
                 "Shortest route",
                 f"{shortest_km:.2f} km"
             )
+
             metric2.metric(
                 "Terrain-aware route",
                 f"{terrain_km:.2f} km"
@@ -1055,13 +1613,22 @@ try:
 except Exception as e:
     st.error(f"Route planner error: {e}")
 
+
+# --------------------------------------------------
+# 6. EXPLORATION TARGETS — DEMONSTRATION DATA
+# --------------------------------------------------
+
+st.html('<div class="section-label">06 / EXPLORATION SIMULATION</div>')
+
 st.subheader("Exploration Targets — Demonstration Data")
+
 st.caption(
     "The targets in this section are simulated demonstration "
     "points created to test the exploration interface. "
     "They are not verified geological locations or actual "
     "Perseverance mission targets."
 )
+
 st.warning(
     "These three targets are fictional examples. "
     "Their coordinates and science scores have not been verified."
@@ -1088,7 +1655,11 @@ targets = pd.DataFrame([
     },
 ])
 
-st.dataframe(targets, width="stretch", hide_index=True)
+st.dataframe(
+    targets,
+    width="stretch",
+    hide_index=True
+)
 
 minimum_value = st.slider(
     "Minimum illustrative science score",
@@ -1098,10 +1669,11 @@ minimum_value = st.slider(
 )
 
 filtered_targets = targets[
-    targets["Science Value"] >= minimum_value
+    targets["Illustrative Science Score"] >= minimum_value
 ]
 
 st.subheader("Selected Targets")
+
 st.dataframe(
     filtered_targets,
     width="stretch",
