@@ -668,6 +668,7 @@ try:
 except Exception as e:
     st.error(f"Could not load the atmospheric dust explorer: {e}")
 
+
 st.subheader("Jezero Crater — Science Points of Interest")
 
 science_pois = pd.DataFrame([
@@ -675,36 +676,36 @@ science_pois = pd.DataFrame([
         "Location": "Octavia E. Butler",
         "Feature": "Perseverance landing site",
         "Scientific significance": "Landing location of Perseverance on 18 February 2021",
-        "Status": "Visited"
+        "Status": "Landing site"
     },
     {
         "Location": "Three Forks",
         "Feature": "Sample depot",
-        "Scientific significance": "Location where Perseverance deposited 10 filled sample tubes",
-        "Status": "Visited"
+        "Scientific significance": "Sample depot where Perseverance deposited 10 filled sample tubes",
+        "Status": "Depot established"
     },
     {
         "Location": "Kodiak",
         "Feature": "Sedimentary hill",
-        "Scientific significance": "Flat-topped hill imaged during early rover exploration",
-        "Status": "Imaged"
+        "Scientific significance": "Flat-topped hill imaged during early rover exploration, revealing ancient layered rocks",
+        "Status": "Imaged, not visited"
     },
     {
         "Location": "Pinestand",
         "Feature": "Layered sedimentary hill",
-        "Scientific significance": "Potential record of ancient river deposition",
+        "Scientific significance": "Layered formation that may preserve evidence of ancient river deposition",
         "Status": "Imaged, not visited"
     },
     {
         "Location": "Bright Angel",
         "Feature": "Layered geological formation",
-        "Scientific significance": "Exposed layered rocks investigated in Neretva Vallis",
+        "Scientific significance": "Light-toned, layered rock formation investigated by Perseverance in Neretva Vallis",
         "Status": "Visited"
     },
     {
         "Location": "Tuff Cliff",
         "Feature": "Rocky outcrop",
-        "Scientific significance": "Rocky outcrop in the Neretva Vallis channel",
+        "Scientific significance": "Outcrop associated with the Bright Angel geological formation, investigated by Perseverance",
         "Status": "Visited"
     }
 ])
@@ -717,16 +718,22 @@ st.dataframe(
 
 st.caption(
     "Science locations are documented Perseverance mission landmarks. "
-    "Descriptions are simplified for exploration planning. "
+    "Descriptions are simplified for regional exploration context. "
     "This catalogue is not a rover navigation database."
 )
 
 st.markdown(
-    "Sources: [NASA/JPL — Perseverance's Mid-Climb View of Jezero Crater]"
-    "(https://www.jpl.nasa.gov/images/pia26378-perseverances-mid-climb-view-of-jezero-crater/) "
-    "| [NASA — Bright Angel and Neretva Vallis research]"
-    "(https://science.nasa.gov/)"
+    """
+    **Sources:**
+
+    - [NASA — Perseverance's landing and exploration of Jezero](https://www.jpl.nasa.gov/news/nasas-perseverance-rover-touches-down-on-mars)
+    - [NASA — Three Forks Sample Depot Map](https://science.nasa.gov/resource/perseverances-three-forks-sample-depot-map/)
+    - [NASA/JPL — Perseverance's Mid-Climb View of Jezero Crater](https://www.jpl.nasa.gov/images/pia26378-perseverances-mid-climb-view-of-jezero-crater/)
+    - [NASA — Perseverance Finds Popcorn on Planet Mars (Bright Angel)](https://science.nasa.gov/missions/mars-2020-perseverance/perseverance-finds-popcorn-on-planet-mars/)
+    - [Scientific study — Bright Angel formation and Tuff Cliff](https://doi.org/10.1029/2025JE009123)
+    """
 )
+
 
 st.subheader("Terrain Hazard Screening")
 
@@ -1051,8 +1058,9 @@ except Exception as e:
 st.subheader("Exploration Targets — Demonstration Data")
 st.caption(
     "The targets in this section are simulated demonstration "
-    "points created for testing the exploration interface. "
-    "They are not verified geological locations."
+    "points created to test the exploration interface. "
+    "They are not verified geological locations or actual "
+    "Perseverance mission targets."
 )
 st.warning(
     "These three targets are fictional examples. "
@@ -1064,26 +1072,26 @@ targets = pd.DataFrame([
         "Target": "Target A",
         "Latitude": 18.4,
         "Longitude": 77.6,
-        "Science Value": 8,
+        "Illustrative Science Score": 8,
     },
     {
         "Target": "Target B",
         "Latitude": 18.6,
         "Longitude": 77.9,
-        "Science Value": 5,
+        "Illustrative Science Score": 5,
     },
     {
         "Target": "Target C",
         "Latitude": 18.3,
         "Longitude": 77.7,
-        "Science Value": 9,
+        "Illustrative Science Score": 9,
     },
 ])
 
-st.dataframe(targets, use_container_width=True, hide_index=True)
+st.dataframe(targets, width="stretch", hide_index=True)
 
 minimum_value = st.slider(
-    "Minimum science value",
+    "Minimum illustrative science score",
     min_value=1,
     max_value=10,
     value=7,
@@ -1096,7 +1104,7 @@ filtered_targets = targets[
 st.subheader("Selected Targets")
 st.dataframe(
     filtered_targets,
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
 )
 
